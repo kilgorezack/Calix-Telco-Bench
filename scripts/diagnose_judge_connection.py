@@ -24,15 +24,18 @@ def _env(path: Path) -> dict[str, Any]:
 
     if path.is_file():
         load_dotenv(path, override=False)
-    token = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    from calix_telco_bench.judging import JUDGE_CA_BUNDLE_ENV, _credential, judge_api_key
+
+    token = judge_api_key()
     return {
         "env_file": str(path),
         "env_file_exists": path.is_file(),
         "base_url": os.getenv("ANTHROPIC_BASE_URL"),
         "credential_variable": (
-            "ANTHROPIC_AUTH_TOKEN" if os.getenv("ANTHROPIC_AUTH_TOKEN") else
-            "ANTHROPIC_API_KEY" if os.getenv("ANTHROPIC_API_KEY") else None
+            "ANTHROPIC_AUTH_TOKEN" if _credential("ANTHROPIC_AUTH_TOKEN") else
+            "ANTHROPIC_API_KEY" if _credential("ANTHROPIC_API_KEY") else None
         ),
+        "ca_bundle": os.getenv(JUDGE_CA_BUNDLE_ENV),
         "credential_present": bool(token),
         "credential_length": len(token) if token else 0,
         "judge_provider": os.getenv("CALIX_TELCO_BENCH_JUDGE_PROVIDER"),
@@ -57,14 +60,16 @@ def _request(model: str) -> dict[str, Any]:
     from anthropic import Anthropic
     import httpx2
 
-    token = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    from calix_telco_bench.judging import _judge_tls_verify, judge_api_key
+
+    token = judge_api_key()
     if not token:
         raise RuntimeError("no ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is configured")
     options: dict[str, Any] = {"api_key": token}
     if base_url := os.getenv("ANTHROPIC_BASE_URL"):
         options["base_url"] = base_url
     started = time.monotonic()
-    client = httpx2.Client(verify=False)
+    client = httpx2.Client(verify=_judge_tls_verify())
     try:
         response = Anthropic(**options, http_client=client, timeout=60.0).messages.create(
             model=model,
@@ -102,10 +107,11 @@ def main() -> int:
         "parallelism": args.parallelism,
         "results": [],
     }
-    configuration_ok = bool(environment["credential_present"] and environment["base_url"] and environment["judge_model"])
+    # ANTHROPIC_BASE_URL is optional: unset means the public Anthropic API.
+    configuration_ok = bool(environment["credential_present"] and environment["judge_model"])
     if args.requests and not configuration_ok:
         report["configuration_ok"] = False
-        report["error"] = "real probe requires ANTHROPIC_BASE_URL, a credential, and CALIX_TELCO_BENCH_JUDGE_MODEL"
+        report["error"] = "real probe requires a credential and CALIX_TELCO_BENCH_JUDGE_MODEL"
         print(json.dumps(report, indent=2, sort_keys=True))
         return 2
     report["configuration_ok"] = configuration_ok

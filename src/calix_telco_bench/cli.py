@@ -7,7 +7,7 @@ from .contracts import load_manifest, sha256, validate_manifest
 from .control import (start as start_worker, status as worker_status, stop as stop_worker,
                       start_judge_all, judge_all_status, stop_judge_all,
                       start_pipeline, pipeline_status, stop_pipeline)
-from .env import load_judge_env
+from .env import default_env_file, load_judge_env
 from .generation import run, run_openai_compatible
 from .judging import judge
 from .plan import load_run_config, resolve_target
@@ -50,7 +50,7 @@ def main() -> None:
     item.add_argument("--refresh-seconds", type=float, default=2.0)
     item = commands.add_parser("judge", help="run the configured LLM judge over frozen generation evidence")
     item.add_argument("--config", type=Path, required=True); item.add_argument("--target", required=True)
-    item.add_argument("--env-file", type=Path, help="local .env; defaults to config directory/.env")
+    item.add_argument("--env-file", type=Path, help="local .env; defaults to the nearest .env from the config directory up to the repository root")
     item.add_argument("--batch-size", type=int, default=5); item.add_argument("--retries", type=int, default=3)
     item.add_argument("--resume", action="store_true"); item.add_argument("--allow-incomplete", action="store_true")
     item.add_argument("--max-items", type=int); item.add_argument("--dry-run", action="store_true"); item.add_argument("--routes", help="comma-separated completed route subset")
@@ -58,7 +58,7 @@ def main() -> None:
     item.add_argument("--config", type=Path, required=True)
     item = commands.add_parser("judge-all", help="judge every configured target under one frozen protocol")
     item.add_argument("--config", type=Path, required=True); item.add_argument("--targets", help="comma-separated target subset")
-    item.add_argument("--env-file", type=Path, help="local .env; defaults to config directory/.env")
+    item.add_argument("--env-file", type=Path, help="local .env; defaults to the nearest .env from the config directory up to the repository root")
     item.add_argument("--batch-size", type=int, default=5); item.add_argument("--retries", type=int, default=3)
     item.add_argument("--parallelism", type=int, default=4, help="maximum independent target judge workers (default: 4)")
     item.add_argument("--resume", action="store_true"); item.add_argument("--allow-incomplete", action="store_true")
@@ -195,7 +195,7 @@ def main() -> None:
             return judge(
                 generations=plan["output"] / "generations.jsonl", output=plan["output"],
                 protocol_path=protocol_path, rubric_path=rubric_path,
-                env_file=args.env_file or config_path.parent / ".env",
+                env_file=args.env_file or default_env_file(config_path),
                 batch_size=args.batch_size, retries=args.retries, resume=args.resume,
                 allow_incomplete=args.allow_incomplete, max_items=args.max_items, dry_run=args.dry_run,
                 routes=args.routes.split(",") if getattr(args, "routes", None) else None,

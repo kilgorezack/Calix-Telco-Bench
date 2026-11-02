@@ -328,7 +328,19 @@ remain environment-only and are never written to the score report.
 For the public Anthropic API, set `ANTHROPIC_API_KEY` in `.env` and leave
 `ANTHROPIC_BASE_URL` unset. For a custom Anthropic-compatible endpoint, set both
 `ANTHROPIC_BASE_URL` (e.g., `https://api.yourcompany.com/`) and
-`ANTHROPIC_AUTH_TOKEN` in `.env`.
+`ANTHROPIC_AUTH_TOKEN` in `.env`. If both credentials are set,
+`ANTHROPIC_AUTH_TOKEN` is used; the placeholder values from older copies of
+`.env.example` are treated as unset.
+
+The judge always verifies the endpoint's TLS certificate. If a self-hosted
+endpoint uses a private certificate authority, set
+`CALIX_TELCO_BENCH_JUDGE_CA_BUNDLE` to that authority's PEM file instead of
+disabling verification.
+
+Config-driven commands find `.env` by searching from the config file's
+directory up to the repository root, so the repository-root `.env` created by
+`setup.sh` is used for `config/*.yaml` and `config/local/*.yaml`. Pass
+`--env-file` to choose a different file.
 
 ### LLM-as-judge stage
 

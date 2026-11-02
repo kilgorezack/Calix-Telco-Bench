@@ -6,6 +6,27 @@ from pathlib import Path
 from typing import Any
 
 
+def default_env_file(config_path: Path) -> Path:
+    """Locate the untracked `.env` that belongs to an evaluation config.
+
+    ``setup.sh`` and the README place `.env` at the repository root, while
+    configs live in ``config/`` or ``config/local/``. Search from the config's
+    directory upward and stop at the checkout root (the first directory holding
+    ``pyproject.toml`` or ``.git``). If none exists, return the checkout-root
+    location so error messages name the documented path.
+    """
+    start = config_path.resolve().parent
+    checkout_root: Path | None = None
+    for directory in (start, *start.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+        if (directory / "pyproject.toml").is_file() or (directory / ".git").exists():
+            checkout_root = directory
+            break
+    return (checkout_root or start) / ".env"
+
+
 def load_runtime_env(env_file: Path | None = None) -> Path | None:
     """Load an untracked `.env` without overriding exported variables."""
     try:
