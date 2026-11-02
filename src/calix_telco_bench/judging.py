@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +101,38 @@ usefulness. Do not include prose, Markdown, totals, IDs, or extra keys.
 """
 
 
+JUDGE_CA_BUNDLE_ENV = "CALIX_TELCO_BENCH_JUDGE_CA_BUNDLE"
+
+# Values shipped in .env.example. They must never be sent as a credential.
+_PLACEHOLDER_CREDENTIALS = frozenset({"replace-with-your-token", "replace-with-your-key"})
+
+
+def _judge_tls_verify() -> ssl.SSLContext | bool:
+    """Return the TLS verification setting for the judge transport.
+
+    Verification is never disabled. ``CALIX_TELCO_BENCH_JUDGE_CA_BUNDLE`` may
+    name a PEM file that adds a private certificate authority for a
+    self-hosted Anthropic-compatible endpoint.
+    """
+    bundle = os.getenv(JUDGE_CA_BUNDLE_ENV)
+    if not bundle:
+        return True
+    path = Path(bundle).expanduser()
+    if not path.is_file():
+        raise JudgeError(f"{JUDGE_CA_BUNDLE_ENV} does not name a readable file: {path}")
+    return ssl.create_default_context(cafile=str(path))
+
+
+def _credential(name: str) -> str | None:
+    value = (os.getenv(name) or "").strip()
+    return value if value and value not in _PLACEHOLDER_CREDENTIALS else None
+
+
+def judge_api_key() -> str | None:
+    """Return the configured judge credential, ignoring unset or placeholder values."""
+    return _credential("ANTHROPIC_AUTH_TOKEN") or _credential("ANTHROPIC_API_KEY")
+
+
 def _anthropic_text(*, api_key: str, model: str, prompt: str) -> str:
     try:
         from anthropic import Anthropic
@@ -109,9 +142,10 @@ def _anthropic_text(*, api_key: str, model: str, prompt: str) -> str:
     options: dict[str, Any] = {"api_key": api_key}
     if base_url := os.getenv("ANTHROPIC_BASE_URL"):
         options["base_url"] = base_url
-    # The organization-hosted Anthropic-compatible endpoint uses a private
-    # certificate. This is the same explicit transport contract used by MOPD.
-    http_client = httpx2.Client(verify=False)
+    # TLS certificates are always verified: the request carries the provider
+    # credential. An endpoint with a private certificate authority is trusted
+    # by supplying that CA bundle, never by disabling verification.
+    http_client = httpx2.Client(verify=_judge_tls_verify())
     try:
         # Keep this call contract byte-for-byte aligned in shape with the
         # proven MOPD evaluator transport.
@@ -171,7 +205,7 @@ def judge(
     provider, model = metadata["provider"], metadata["model"]
     if not provider or not model:
         raise JudgeError("CALIX_TELCO_BENCH_JUDGE_PROVIDER and CALIX_TELCO_BENCH_JUDGE_MODEL are required in .env")
-    api_key = os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    api_key = judge_api_key()
     if not api_key and not dry_run:
         raise JudgeError("ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is required in .env")
     output.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,7 @@ from pathlib import Path
 from time import sleep
 from typing import Any
 
-from .control import start as start_worker, status as worker_status, stop as stop_worker
+from .control import _process_start_ticks, start as start_worker, status as worker_status, stop as stop_worker
 from .plan import resolve_target
 
 _FREE_MEMORY_MIB = 1024
@@ -108,6 +108,7 @@ def run_pipeline(config: dict[str, Any], config_path: Path, *, targets: list[str
     judge_pending: list[tuple[str, str | None]] = []
     active_generation: dict[str, str] = {}
     active_judges: dict[tuple[str, str | None], subprocess.Popen[str]] = {}
+    judge_start_ticks: dict[tuple[str, str | None], str | None] = {}
     generation_complete: list[str] = []
     judge_complete: list[str] = []
     failed: dict[str, str] = {}
@@ -119,7 +120,15 @@ def run_pipeline(config: dict[str, Any], config_path: Path, *, targets: list[str
             "schema_version": 2, "status": stage, "updated_at_utc": _now(), "targets": targets,
             "generation_pending": list(generation_pending), "active_generation": dict(active_generation),
             "generation_complete": list(generation_complete), "judge_pending": [f"{target}:{route or 'final'}" for target, route in judge_pending],
-            "active_judges": {f"{target}:{route or 'final'}": process.pid for (target, route), process in active_judges.items()}, "judge_complete": list(judge_complete),
+            # Persist enough identity for ``stop-all`` to verify each PID before
+            # signalling it, exactly as for other managed workers.
+            "active_judges": {
+                f"{target}:{route or 'final'}": {
+                    "pid": process.pid, "process_start_ticks": judge_start_ticks.get((target, route)),
+                    "command": [str(part) for part in process.args],
+                }
+                for (target, route), process in active_judges.items()
+            }, "judge_complete": list(judge_complete),
             "failed": dict(failed), "message": message,
             "scheduler": {"gpu_policy": "first currently free GPU", "free_memory_mib_max": _FREE_MEMORY_MIB,
                           "free_utilization_percent_max": _FREE_UTILIZATION_PERCENT,
@@ -159,7 +168,9 @@ def run_pipeline(config: dict[str, Any], config_path: Path, *, targets: list[str
             while judge_pending and len(active_judges) < _MAX_CONCURRENT_JUDGES:
                 target, route = judge_pending.pop(0)
                 try:
-                    active_judges[(target, route)] = _start_target_judge(config_path, target, Path(plans[target]["output"]), resume, route)
+                    process = _start_target_judge(config_path, target, Path(plans[target]["output"]), resume, route)
+                    active_judges[(target, route)] = process
+                    judge_start_ticks[(target, route)] = _process_start_ticks(process.pid)
                 except Exception as exc:
                     failed[target] = f"could not start judge for {route or 'final'}: {type(exc).__name__}: {exc}"
 
@@ -182,6 +193,7 @@ def run_pipeline(config: dict[str, Any], config_path: Path, *, targets: list[str
                 if process.poll() is None:
                     continue
                 del active_judges[(target, route)]
+                judge_start_ticks.pop((target, route), None)
                 valid, reason = _judge_is_complete(plans[target], route)
                 if valid and route is None:
                     judge_complete.append(target)

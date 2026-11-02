@@ -7,11 +7,11 @@ from typing import Any
 
 import yaml
 
-from .env import load_runtime_env
+from .env import default_env_file, load_runtime_env
 
 
 def load_run_config(path: Path) -> dict[str, Any]:
-    load_runtime_env(path.parent / ".env")
+    load_runtime_env(default_env_file(path))
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise ValueError("evaluation config requires schema_version: 1")
@@ -40,6 +40,24 @@ def _path(config_path: Path, value: str) -> Path:
     return path if path.is_absolute() else (config_path.parent / path).resolve()
 
 
+def _target_output(output_root: Path, value: object, target_name: str) -> Path:
+    """Resolve a target's evidence directory strictly inside ``output_root``.
+
+    ``start-all`` deletes this directory for a fresh run, so an empty, absolute,
+    or ``..``-escaping value must never reach it.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"target {target_name!r} output must be a non-empty relative path")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"target {target_name!r} output must be relative to output_root without '..': {value!r}")
+    root = output_root.resolve()
+    output = (root / relative).resolve()
+    if output == root or root not in output.parents:
+        raise ValueError(f"target {target_name!r} output must be a subdirectory of output_root: {value!r}")
+    return output
+
+
 def resolve_target(config: dict[str, Any], config_path: Path, target_name: str) -> dict[str, Any]:
     benchmark = config["benchmark"]
     target = config["targets"].get(target_name)
@@ -48,7 +66,7 @@ def resolve_target(config: dict[str, Any], config_path: Path, target_name: str) 
     manifest = _path(config_path, str(benchmark["manifest"]))
     prompts = _path(config_path, str(benchmark["prompts"]))
     output_root = _path(config_path, str(benchmark["output_root"]))
-    output = output_root / str(target["output"])
+    output = _target_output(output_root, target.get("output"), target_name)
     routes = target.get("routes")
     if routes is not None and (not isinstance(routes, list) or not all(isinstance(route, str) for route in routes)):
         raise ValueError(f"target {target_name!r} routes must be a list of strings or null")

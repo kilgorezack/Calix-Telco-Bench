@@ -74,7 +74,9 @@ def _managed_status(control: dict[str, Any] | None) -> tuple[bool, str]:
     if started is None:
         return False, "process exited"
     expected_started = control.get("process_start_ticks")
-    if isinstance(expected_started, str) and started != expected_started:
+    if not isinstance(expected_started, str):
+        return False, "control record has no process start time; cannot verify identity"
+    if started != expected_started:
         return False, "PID was reused"
     try:
         command_line = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace").replace("\0", " ")
@@ -189,23 +191,38 @@ def stop_pipeline(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     # legacy judge-all worker), each in its own process session.
     root = _judge_all_root(config, config_path)
     state = _read_control_file(root / "pipeline-state.json") or {}
+    # The state file can outlive a crashed coordinator, so each recorded PID is
+    # verified (start time and command line) before it is signalled; otherwise
+    # a reused PID could belong to an unrelated process group.
     active_judges = state.get("active_judges", {})
+    judge_results: dict[str, dict[str, Any]] = {}
     if isinstance(active_judges, dict):
-        for judge_pid in active_judges.values():
-            if isinstance(judge_pid, int) and judge_pid > 0:
-                try:
-                    os.killpg(judge_pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-    children_stopped = any(result.get("stopped") for result in worker_results.values()) or bool(judge_result.get("stopped"))
+        for name, record in active_judges.items():
+            if not isinstance(record, dict):
+                judge_results[str(name)] = {"stopped": False, "reason": "unverifiable legacy PID record; not signalled"}
+                continue
+            running, reason = _managed_status(record)
+            if not running:
+                judge_results[str(name)] = {"stopped": False, "reason": reason}
+                continue
+            try:
+                os.killpg(int(record["pid"]), signal.SIGTERM)
+                judge_results[str(name)] = {"stopped": True, "signal": "SIGTERM"}
+            except ProcessLookupError:
+                judge_results[str(name)] = {"stopped": False, "reason": "judge exited before stop signal"}
+    children_stopped = (
+        any(result.get("stopped") for result in worker_results.values())
+        or bool(judge_result.get("stopped"))
+        or any(result.get("stopped") for result in judge_results.values())
+    )
     if coordinator_stopped or children_stopped:
         return {
             **current, "stopped": True, "signal": "SIGTERM",
-            "workers": worker_results, "judge": judge_result,
+            "workers": worker_results, "judge": judge_result, "pipeline_judges": judge_results,
         }
     return {
         **current, "stopped": False, "reason": coordinator_reason,
-        "workers": worker_results, "judge": judge_result,
+        "workers": worker_results, "judge": judge_result, "pipeline_judges": judge_results,
     }
 
 
